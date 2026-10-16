@@ -1,14 +1,14 @@
 name: モンストDiscord自動投稿
 on:
   schedule:
-    - cron: '0,30 * * * *' # 30分ごと（UTC）
+    - cron: '0,30 * * * *' # 30分ごとに情報確認のみ（UTC）
     - cron: '0 21 * * *'   # 日本時間6:00（UTC前日21:00）
   workflow_dispatch:
     inputs:
       mode:
-        description: 'morning または check'
+        description: 'morning / check / campaigns'
         required: true
-        default: 'morning'
+        default: 'campaigns'
 permissions:
   contents: write
 concurrency:
@@ -23,14 +23,15 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
-      - name: 投稿
+      - name: キャンペーン一覧
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           INPUT_MODE: ${{ github.event.inputs.mode }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
         run: |
           if [ -n "$INPUT_MODE" ]; then
             MODE="$INPUT_MODE"
-          elif [ "$(TZ=Asia/Tokyo date +%H)" = "06" ]; then
+          elif [ "$EVENT_SCHEDULE" = '0 21 * * *' ]; then
             MODE=morning
           else
             MODE=check
@@ -43,7 +44,7 @@ jobs:
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add seen.json
             if ! git diff --cached --quiet; then
-              git commit -m 'Update notification state'
+              git commit -m 'Update campaign state'
               git push
             fi
           fi
