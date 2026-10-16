@@ -1,0 +1,49 @@
+name: モンストDiscord自動投稿
+on:
+  schedule:
+    - cron: '0,30 * * * *' # 30分ごと（UTC）
+    - cron: '0 21 * * *'   # 日本時間6:00（UTC前日21:00）
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'morning または check'
+        required: true
+        default: 'morning'
+permissions:
+  contents: write
+concurrency:
+  group: monst-discord-bot
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: 投稿
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          if [ -n "$INPUT_MODE" ]; then
+            MODE="$INPUT_MODE"
+          elif [ "$(TZ=Asia/Tokyo date +%H)" = "06" ]; then
+            MODE=morning
+          else
+            MODE=check
+          fi
+          MODE="$MODE" python bot.py
+      - name: 投稿履歴を保存
+        run: |
+          if [ -f seen.json ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add seen.json
+            if ! git diff --cached --quiet; then
+              git commit -m 'Update notification state'
+              git push
+            fi
+          fi
