@@ -29,12 +29,12 @@ GROUPS = [
     ('⚔️ 絶級・降臨関連', r'絶級|轟絶|黎絶|爆絶|超絶|降臨'),
     ('🎁 その他', r'キャンペーン|確率アップ|報酬.*倍|経験値.*倍|大成功|オーブ'),
 ]
-# 日本語表記・スラッシュ表記の両方に対応
-DATE = r'(?:20\d{2}年\s*)?\d{1,2}\s*(?:月|/)\s*\d{1,2}\s*日?'
-DAY = rf'{DATE}(?:\s*[（(][月火水木金土日祝]{1,3}[）)])?'
-# 「10月16日（金）0:00～10月20日（火）23:59」なども扱う
-PERIOD = re.compile(rf'({DAY})(?:\s*(?:AM|PM)?\s*\d{{1,2}}:\d{{2}})?\s*(?:～|〜|~|－|–|—|ー|\-|から)\s*({DAY})')
-SINGLE = re.compile(DAY)
+# 公式記事でよく使われる日付・曜日・時刻の表記を吸収する。
+DATE = r'(?:20\d{2}\s*[年/.-]\s*)?\d{1,2}\s*(?:月|[/.\-])\s*\d{1,2}\s*日?'
+DAY = rf'{DATE}(?:\s*[（(][^）)]{{1,5}}[）)])?'
+CLOCK = r'(?:\s*(?:午前|午後)?\s*\d{1,2}\s*[:：]\s*\d{2})?'
+SEP = r'(?:～|〜|~|－|–|—|ー|\-|から|より|～|〜)'
+PERIOD = re.compile(rf'({DAY}){CLOCK}\s*{SEP}\s*({DAY}){CLOCK}')
 ATTR = re.compile(r'火属性|水属性|木属性|光属性|闇属性|全属性')
 
 
@@ -69,38 +69,48 @@ def extract(url, title):
     for tag in soup.select('script,style,nav,footer,header'):
         tag.decompose()
     main = soup.select_one('article, main, .newsDetail, .news_detail, #contents') or soup.body or soup
-    # 見出し・段落以外のdivや表内テキストも拾う。空白を残しすぎない。
-    lines = []
-    for text in main.stripped_strings:
-        line = clean(text)
-        if 3 <= len(line) <= 350 and (not lines or lines[-1] != line):
-            lines.append(line)
-    print(f'記事解析: {url} / テキスト断片 {len(lines)}件')
+
+    # stripped_strings では日付と区切り記号が別々になりやすい。
+    # HTMLのブロック単位で結合した文章も用意する。
+    fragments = [clean(t) for t in main.stripped_strings if clean(t)]
+    blocks = []
+    for node in main.select('h1,h2,h3,h4,h5,p,li,tr,section,div'):
+        # 親divによる巨大な重複を避ける
+        if node.name in ('div', 'section') and len(node.select('div,section,p,li,tr')) > 6:
+            continue
+        line = clean(node.get_text(' ', strip=True))
+        if 5 <= len(line) <= 900 and line not in blocks:
+            blocks.append(line)
+    # 断片をつないだ文章でも検出（最大数を制限して負荷を抑える）
+    windows = [' '.join(fragments[i:i+16]) for i in range(0, min(len(fragments), 1200), 8)]
+    texts = list(dict.fromkeys(blocks + windows))
+    period_count = sum(len(PERIOD.findall(t)) for t in texts)
+    print(f'記事解析: {url} / 断片 {len(fragments)}件 / ブロック {len(blocks)}件 / 期間表記 {period_count}件')
+
     results = []
-    for i, line in enumerate(lines):
-        for group, pattern in GROUPS:
-            if not re.search(pattern, line):
-                continue
-            if group == '🎁 その他' and any(re.search(p, line) for _, p in GROUPS[:-1]):
-                continue
-            # 近接する日程だけを採用し、別キャンペーンの日程混入を抑える
-            neighborhood = lines[i:min(i + 7, len(lines))]
-            periods = []
-            attrs = []
-            for entry in neighborhood:
-                periods.extend(f'{clean(a)} ～ {clean(b)}' for a, b in PERIOD.findall(entry))
-                attrs.extend(ATTR.findall(entry))
-            periods = list(dict.fromkeys(periods))
-            attrs = list(dict.fromkeys(attrs))[:5]
-            if not periods:
-                continue
-            results.append({
-                'group': group, 'name': (line if len(line) >= 8 else title)[:85],
-                'period': periods[0], 'attributes': '・'.join(attrs), 'url': url
-            })
-    unique = {}
-    for record in results:
-        unique[(record['group'], record['name'], record['period'])] = record
+    for line in texts:
+        matches = PERIOD.findall(line)
+        if not matches:
+            continue
+        # 同じ文章の中で対象が分かる場合のみ採用。
+        # 離れた別キャンペーンの期間との誤対応を避ける。
+        groups = [(g, pat) for g, pat in GROUPS if re.search(pat, line)]
+        if not groups:
+            continue
+        if len(groups) > 1:
+            groups = [g for g in groups if g[0] != '🎁 その他'] or groups
+        for group, pattern in groups:
+            for start, end in matches[:3]:
+                # 期間の前後の近傍にキャンペーン名があるか確認する
+                match_text = f'{start} ～ {end}'
+                label = title[:85]
+                short = line[:120]
+                if len(short) <= 85 and re.search(pattern, short):
+                    label = short
+                attrs = '・'.join(dict.fromkeys(ATTR.findall(line)))
+                results.append({'group': group, 'name': label,
+                                'period': match_text, 'attributes': attrs, 'url': url})
+    unique = {(r['group'], r['name'], r['period']): r for r in results}
     print(f'  日程抽出: {len(unique)}件')
     return list(unique.values())[:20]
 
@@ -123,7 +133,10 @@ def external_links():
                         candidates.append((link, title, source))
             except (requests.RequestException, ET.ParseError) as exc:
                 print(f'{source} 検索失敗: {exc}')
-    return list(dict.fromkeys(candidates))[:36]
+    candidates = list(dict.fromkeys(candidates))[:36]
+    counts = {source: sum(1 for _, _, s in candidates if s == source) for source in SITES}
+    print('攻略サイト検索結果: ' + ', '.join(f'{k}={v}件' for k, v in counts.items()))
+    return candidates
 
 
 def gather():
@@ -134,6 +147,7 @@ def gather():
         print(f'公式ニュース一覧取得失敗: {exc}')
     candidates.extend(external_links())
     print(f'候補記事: {len(candidates)}件（公式＋攻略サイト）')
+    print('情報源別: ' + ', '.join(f'{src}={sum(1 for _, _, s in candidates if s == src)}件' for src in ['モンスト公式', *SITES]))
     records = []
     for url, title, source in candidates:
         if not re.search(r'キャンペーン|書庫|神殿|ノーマル|絶級|周年|報酬|経験値|強化|轟絶|黎絶|モンスト', title):
