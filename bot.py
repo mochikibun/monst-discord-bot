@@ -74,6 +74,42 @@ def label(heading):
     return None
 
 
+def zekkyu_detail(heading, lines):
+    """絶級・降臨の見出しと同じ節に明記された特典・対象のみを返す。
+
+    曖昧な場合は掲載しない（他カテゴリのキャンペーンを混ぜない）。
+    """
+    title = clean(heading)
+    # 別カテゴリを優先して除外
+    if re.search(r'追憶の書庫|書庫ポイント|英雄の神殿|わくわくの実|ノーマルクエスト|ノマクエ', title):
+        return None
+    if not re.search(r'絶級|超絶|爆絶|轟絶|黎絶|降臨', title):
+        return None
+    # キャンペーン内容は必ず同じ見出し内の文字列で確認する。
+    text = ' '.join([title] + lines[:24])
+    benefits = [
+        (r'(?:スペシャル報酬|ノーコン報酬|クリア報酬|報酬)[^。\n]{0,35}?(?:2倍|３倍|3倍|アップ|増加|追加|確定)', '報酬アップ'),
+        (r'(?:金卵|宝箱)[^。\n]{0,25}?(?:2倍|確率アップ|排出率アップ|増加)', '金卵・宝箱の獲得率アップ'),
+        (r'(?:消費スタミナ|スタミナ消費|スタミナ)[^。\n]{0,20}?(?:1/2|半分|半減|0|ゼロ)', '消費スタミナ減少'),
+        (r'(?:経験値|EXP)[^。\n]{0,20}?(?:2倍|3倍|アップ)', '獲得経験値アップ'),
+    ]
+    benefit = None
+    for pat, fallback in benefits:
+        m = re.search(pat, text)
+        if m:
+            phrase = clean(m.group())
+            benefit = phrase if len(phrase) <= 40 else fallback
+            break
+    if not benefit:
+        return None
+    targets = [x for x in ('黎絶', '轟絶', '爆絶', '超絶') if x in title]
+    # 本文全体から対象を推測しない。見出しに書かれている対象だけ表示。
+    target = '・'.join(targets) if targets else ('絶級・降臨' if '絶級' in title or '降臨' in title else None)
+    if not target:
+        return None
+    return f'{target}：{benefit}'
+
+
 def section_text(node):
     """見出しから次の同レベル以上の見出しまでの内容を取得。"""
     parts = []
@@ -127,6 +163,19 @@ def extract_article(url, source, today):
                 if d and today <= d <= today + timedelta(days=120):
                     daily.append((d, attrs[0]))
         if not periods: continue
+        # 絶級・降臨だけの安全策：複数の日付行から隣接日を誤って
+        # 「開始〜終了」と解釈した場合に、連続した期間を大量表示しない。
+        # 見出し内で開催期間が一意に確定できない場合は掲載しない。
+        if cat == CATEGORIES[3]:
+            distinct = sorted(set(periods))
+            if len(distinct) != 1 or len(ranges) != 1:
+                print(f'[絶級・降臨] 期間が一意に確定できないため掲載を保留: {title[:60]} / 候補={len(distinct)}件')
+                continue
+            detail = zekkyu_detail(title, lines)
+            if not detail:
+                print(f'[絶級・降臨] 内容または対象を確認できず掲載保留: {title[:60]}')
+                continue
+            name = detail
         for start, end in sorted(set(periods)):
             days = [(d, a) for d, a in daily if start <= d <= end]
             records.append({'category': cat, 'name': name, 'start': start.isoformat(),
