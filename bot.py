@@ -1,237 +1,247 @@
-"""モンスト公式ニュースからキャンペーン概要を自動整理してDiscordへ投稿。"""
-import hashlib
-import xml.etree.ElementTree as ET
-from datetime import date, timedelta
-from urllib.parse import urlencode
+"""モンストのキャンペーン日程のみをDiscordへ投稿するBot。
+情報源は公式キャンペーン記事を優先し、攻略サイトは補助候補として参照。
+"""
 import json
 import os
 import re
 import sys
 import time
-from datetime import datetime
+import xml.etree.ElementTree as ET
+from datetime import datetime, date, timedelta
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlencode
 from zoneinfo import ZoneInfo
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
-BASE = 'https://www.monster-strike.com/news/'
-SITES = {'GameWith': 'gamewith.jp', 'Game8': 'game8.jp', 'AppBank': 'appbank.net'}
-SEARCH_TERMS = ['モンスト 書庫 キャンペーン', 'モンスト 神殿 ノマクエ キャンペーン', 'モンスト 絶級 キャンペーン']
-STATE = Path('seen.json')
 JST = ZoneInfo('Asia/Tokyo')
-HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; PersonalMonstCampaignBot/1.0)'}
-GROUPS = [
-    ('📚 追憶の書庫', r'追憶の書庫|書庫ポイント'),
-    ('💎 英雄の神殿', r'英雄の神殿|わくわくの実|神殿'),
-    ('✨ ノーマルクエスト', r'ノーマルクエスト|ノマクエ'),
-    ('⚔️ 絶級・降臨関連', r'絶級|轟絶|黎絶|爆絶|超絶|降臨'),
-    ('🎁 その他', r'キャンペーン|確率アップ|報酬.*倍|経験値.*倍|大成功|オーブ'),
-]
-# 公式記事でよく使われる日付・曜日・時刻の表記を吸収する。
-DATE = r'(?:20\d{2}\s*[年/.-]\s*)?\d{1,2}\s*(?:月|[/.\-])\s*\d{1,2}\s*日?'
-DAY = rf'{DATE}(?:\s*[（(][^）)]{{1,5}}[）)])?'
-CLOCK = r'(?:\s*(?:午前|午後)?\s*\d{1,2}\s*[:：]\s*\d{2})?'
-SEP = r'(?:～|〜|~|－|–|—|ー|\-|から|より|～|〜)'
-PERIOD = re.compile(rf'({DAY}){CLOCK}\s*{SEP}\s*({DAY}){CLOCK}')
-ATTR = re.compile(r'火属性|水属性|木属性|光属性|闇属性|全属性')
-
-
-def get_soup(url):
-    r = requests.get(url, headers=HEADERS, timeout=25)
-    r.raise_for_status()
-    r.encoding = 'utf-8'
-    return BeautifulSoup(r.text, 'html.parser')
-
-
-def news_links():
-    soup = get_soup(BASE)
-    links = []
-    for a in soup.select('a[href]'):
-        url = urljoin(BASE, a['href']).split('#')[0]
-        if not re.search(r'/news/\d{8}_\d+\.html$', urlparse(url).path):
-            continue
-        title = ' '.join(a.stripped_strings)
-        if len(title) >= 7 and url not in [u for u, _ in links]:
-            links.append((url, title[:150]))
-    if not links:
-        raise RuntimeError('公式ニュース一覧を取得できません。サイト構造の変更を確認してください。')
-    return links[:35]
+OFFICIAL = 'https://www.monster-strike.com/news/campaign/'
+SITES = {'GameWith': 'gamewith.jp', 'Game8': 'game8.jp', 'AppBank': 'appbank.net'}
+SEARCHES = ['モンスト キャンペーン 追憶の書庫', 'モンスト 英雄の神殿 ノーマルクエスト キャンペーン']
+HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; MonstCampaignCalendar/2.0)'}
+STATE = Path('seen.json')
+CATEGORIES = ['📚 追憶の書庫', '💎 英雄の神殿', '✨ ノーマルクエスト', '⚔️ 絶級・降臨', '🎁 その他']
+DATE_RX = r'(?:(?:20\d{2})[年/.-])?\s*\d{1,2}\s*(?:月|[/.-])\s*\d{1,2}\s*日?'
+DATE_PART = re.compile(DATE_RX)
+DATE_RANGE = re.compile(rf'({DATE_RX})\s*(?:[（(][月火水木金土日祝]+[）)])?\s*(?:\d{{1,2}}:\d{{2}})?\s*[～〜~－–—-]\s*({DATE_RX})')
+ATTR = re.compile(r'(火|水|木|光|闇)属性')
+KEYS = re.compile('追憶の書庫|書庫ポイント|英雄の神殿|わくわくの実|ノーマルクエスト|ノマクエ|絶級|超絶|爆絶|轟絶|黎絶|降臨|キャンペーン|報酬|経験値|金卵|モンスポット|強化')
 
 
 def clean(s):
     return re.sub(r'\s+', ' ', s).strip()
 
 
-def extract(url, title):
-    soup = get_soup(url)
+def fetch(url):
+    r = requests.get(url, headers=HEADERS, timeout=22)
+    r.raise_for_status()
+    r.encoding = r.apparent_encoding if r.apparent_encoding and r.apparent_encoding.lower() not in ('ascii',) else 'utf-8'
+    return BeautifulSoup(r.text, 'html.parser')
+
+
+def date_value(s, default_year):
+    m = re.search(r'(?:(20\d{2})[年/.-])?\s*(\d{1,2})\s*(?:月|[/.-])\s*(\d{1,2})', s)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1) or default_year), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def category(text):
+    if re.search('追憶の書庫|書庫ポイント', text): return CATEGORIES[0]
+    if re.search('英雄の神殿|わくわくの実.*(?:排出|報酬)|感謝の間', text): return CATEGORIES[1]
+    if re.search('ノーマルクエスト|ノマクエ', text): return CATEGORIES[2]
+    if re.search('絶級|超絶|爆絶|轟絶|黎絶|降臨', text): return CATEGORIES[3]
+    return CATEGORIES[4] if KEYS.search(text) else None
+
+
+def label(heading):
+    h = clean(heading).replace('！', '').replace('!', '')
+    if '追憶の書庫' in h and ('消費' in h or 'ポイント' in h): return '書庫ポイント消費0'
+    if 'ノーマルクエスト' in h and ('経験値' in h or 'EXP' in h):
+        mult = re.search(r'\d+(?:\.\d+)?倍', h)
+        return '獲得経験値' + (mult.group() if mult else 'アップ')
+    if '英雄の神殿' in h:
+        if '2個' in h: return 'ノーコン報酬 わくわくの実2個'
+        return '英雄の神殿キャンペーン'
+    if 'モンスポット' in h and '学び' in h: return '学びのパワー出現率アップ'
+    if '金卵' in h: return '金卵排出率アップ'
+    if '絶級' in h or '超爆轟黎' in h: return '絶級・降臨キャンペーン'
+    # 記事タイトルの流用は禁止。内容が特定できないものは表示しない。
+    return None
+
+
+def section_text(node):
+    """見出しから次の同レベル以上の見出しまでの内容を取得。"""
+    parts = []
+    level = int(node.name[1]) if node.name and re.fullmatch(r'h[1-6]', node.name) else 3
+    for nxt in node.next_elements:
+        if nxt is node: continue
+        if isinstance(nxt, Tag) and re.fullmatch(r'h[1-6]', nxt.name or '') and int(nxt.name[1]) <= level:
+            break
+        if isinstance(nxt, Tag) and nxt.name in ('tr', 'p', 'li', 'div'):
+            # divの大きなブロックによる別セクション混入を防止
+            if nxt.name == 'div': continue
+            s = clean(nxt.get_text(' ', strip=True))
+            if s and (not parts or parts[-1] != s): parts.append(s)
+        if len(parts) > 180: break
+    return parts
+
+
+def extract_article(url, source, today):
+    soup = fetch(url)
     for tag in soup.select('script,style,nav,footer,header'):
         tag.decompose()
     main = soup.select_one('article, main, .newsDetail, .news_detail, #contents') or soup.body or soup
-
-    # stripped_strings では日付と区切り記号が別々になりやすい。
-    # HTMLのブロック単位で結合した文章も用意する。
-    fragments = [clean(t) for t in main.stripped_strings if clean(t)]
-    blocks = []
-    for node in main.select('h1,h2,h3,h4,h5,p,li,tr,section,div'):
-        # 親divによる巨大な重複を避ける
-        if node.name in ('div', 'section') and len(node.select('div,section,p,li,tr')) > 6:
-            continue
-        line = clean(node.get_text(' ', strip=True))
-        if 5 <= len(line) <= 900 and line not in blocks:
-            blocks.append(line)
-    # 断片をつないだ文章でも検出（最大数を制限して負荷を抑える）
-    windows = [' '.join(fragments[i:i+16]) for i in range(0, min(len(fragments), 1200), 8)]
-    texts = list(dict.fromkeys(blocks + windows))
-    period_count = sum(len(PERIOD.findall(t)) for t in texts)
-    print(f'記事解析: {url} / 断片 {len(fragments)}件 / ブロック {len(blocks)}件 / 期間表記 {period_count}件')
-
-    results = []
-    for line in texts:
-        matches = PERIOD.findall(line)
-        if not matches:
-            continue
-        # 同じ文章の中で対象が分かる場合のみ採用。
-        # 離れた別キャンペーンの期間との誤対応を避ける。
-        groups = [(g, pat) for g, pat in GROUPS if re.search(pat, line)]
-        if not groups:
-            continue
-        if len(groups) > 1:
-            groups = [g for g in groups if g[0] != '🎁 その他'] or groups
-        for group, pattern in groups:
-            for start, end in matches[:3]:
-                # 期間の前後の近傍にキャンペーン名があるか確認する
-                match_text = f'{start} ～ {end}'
-                label = title[:85]
-                short = line[:120]
-                if len(short) <= 85 and re.search(pattern, short):
-                    label = short
-                attrs = '・'.join(dict.fromkeys(ATTR.findall(line)))
-                results.append({'group': group, 'name': label,
-                                'period': match_text, 'attributes': attrs, 'url': url})
-    unique = {(r['group'], r['name'], r['period']): r for r in results}
-    print(f'  日程抽出: {len(unique)}件')
-    return list(unique.values())[:20]
+    records = []
+    headings = main.select('h2,h3,h4')
+    print(f'[{source}] 見出し数={len(headings)} URL={url}')
+    for heading in headings:
+        title = clean(heading.get_text(' ', strip=True))
+        cat = category(title)
+        name = label(title)
+        if not cat or not name: continue
+        lines = section_text(heading)
+        if not lines: continue
+        blob = '\n'.join(lines)
+        ranges = DATE_RANGE.findall(blob)
+        periods = []
+        for a, b in ranges:
+            start = date_value(a, today.year)
+            end = date_value(b, start.year if start else today.year)
+            if start and end and end < start and not re.search('20\d{2}', b):
+                try: end = end.replace(year=end.year + 1)
+                except ValueError: continue
+            if start and end and start <= end and end >= today and start <= today + timedelta(days=120):
+                periods.append((start, end))
+        # 日付・属性の対応が表で確認できる場合のみ、日別属性を紐付ける
+        daily = []
+        for line in lines:
+            matches = DATE_PART.findall(line)
+            attrs = ATTR.findall(line)
+            if len(matches) == 1 and len(attrs) == 1:
+                d = date_value(matches[0], today.year)
+                if d and today <= d <= today + timedelta(days=120):
+                    daily.append((d, attrs[0]))
+        if not periods: continue
+        for start, end in sorted(set(periods)):
+            days = [(d, a) for d, a in daily if start <= d <= end]
+            records.append({'category': cat, 'name': name, 'start': start.isoformat(),
+                            'end': end.isoformat(), 'days': [(d.isoformat(), a) for d, a in days],
+                            'source': source})
+    print(f'[{source}] 確認できた日程={len(records)}件')
+    return records
 
 
-def external_links():
-    """Bing公開RSS検索から候補URLを発見。各サイトが許可する範囲でのみ取得する。"""
-    candidates = []
+def official_urls():
+    soup = fetch(OFFICIAL)
+    out = []
+    for a in soup.select('a[href]'):
+        url = urljoin(OFFICIAL, a.get('href', '')).split('#')[0]
+        if re.search(r'/news/20\d{6}_\d+\.html$', urlparse(url).path) and url not in out:
+            out.append(url)
+    return out[:20]
+
+
+def external_urls():
+    found = []
     for source, domain in SITES.items():
-        for term in SEARCH_TERMS:
+        for term in SEARCHES:
             try:
-                rss_url = 'https://www.bing.com/search?' + urlencode({'q': f'site:{domain} {term}', 'format': 'rss'})
-                response = requests.get(rss_url, headers=HEADERS, timeout=18)
-                response.raise_for_status()
-                root = ET.fromstring(response.content)
-                for item in root.findall('.//item')[:6]:
-                    link = (item.findtext('link') or '').strip()
-                    title = clean(item.findtext('title') or '')
+                u = 'https://www.bing.com/search?' + urlencode({'q': f'site:{domain} {term}', 'format': 'rss'})
+                r = requests.get(u, headers=HEADERS, timeout=12)
+                r.raise_for_status()
+                root = ET.fromstring(r.content)
+                for item in root.findall('.//item')[:4]:
+                    link = clean(item.findtext('link') or '')
                     host = (urlparse(link).hostname or '').lower()
                     if (host == domain or host.endswith('.' + domain)) and link.startswith('https://'):
-                        candidates.append((link, title, source))
-            except (requests.RequestException, ET.ParseError) as exc:
-                print(f'{source} 検索失敗: {exc}')
-    candidates = list(dict.fromkeys(candidates))[:36]
-    counts = {source: sum(1 for _, _, s in candidates if s == source) for source in SITES}
-    print('攻略サイト検索結果: ' + ', '.join(f'{k}={v}件' for k, v in counts.items()))
-    return candidates
+                        found.append((link, source))
+            except (requests.RequestException, ET.ParseError) as e:
+                print(f'[{source}] 検索できませんでした: {e}')
+    return list(dict.fromkeys(found))[:18]
 
 
-def gather():
+def gather(today):
     candidates = []
     try:
-        candidates.extend((url, title, 'モンスト公式') for url, title in news_links())
-    except (requests.RequestException, RuntimeError) as exc:
-        print(f'公式ニュース一覧取得失敗: {exc}')
-    candidates.extend(external_links())
-    print(f'候補記事: {len(candidates)}件（公式＋攻略サイト）')
-    print('情報源別: ' + ', '.join(f'{src}={sum(1 for _, _, s in candidates if s == src)}件' for src in ['モンスト公式', *SITES]))
+        candidates += [(u, '公式') for u in official_urls()]
+    except requests.RequestException as e:
+        print(f'[公式] 一覧取得失敗: {e}')
+    candidates += external_urls()
+    print('候補件数:', len(candidates), '内訳:', {s: sum(src == s for _, src in candidates) for s in ['公式', *SITES]})
     records = []
-    for url, title, source in candidates:
-        if not re.search(r'キャンペーン|書庫|神殿|ノーマル|絶級|周年|報酬|経験値|強化|轟絶|黎絶|モンスト', title):
-            continue
+    for url, source in candidates:
         try:
-            found = extract(url, title)
-            for item in found:
-                item['source'] = source
-            records.extend(found)
-        except (requests.RequestException, ValueError) as exc:
-            print(f'{source} 記事取得失敗: {url}: {exc}')
-    # 同じ出典の記事内で重複している項目だけ除去
-    unique = {(r['url'], r['group'], r['name'], r['period']): r for r in records}
-    print(f'抽出合計: {len(unique)}件')
+            records.extend(extract_article(url, source, today))
+        except (requests.RequestException, ValueError) as e:
+            print(f'[{source}] 記事取得失敗: {url}: {e}')
+    # 公式を優先。同一カテゴリ・内容・期間を重複表示しない。
+    records.sort(key=lambda x: (x['source'] != '公式', x['start'], x['name']))
+    unique = {}
+    for r in records:
+        key = (r['category'], r['name'], r['start'], r['end'])
+        if key not in unique or (not unique[key]['days'] and r['days']): unique[key] = r
+    print('一覧掲載:', len(unique), '件')
     return list(unique.values())
+
+
+def render(records, today):
+    lines = [f'🎁 **{today:%Y/%m/%d} モンスト キャンペーン一覧**']
+    for cat in CATEGORIES:
+        items = [r for r in records if r['category'] == cat]
+        if not items: continue
+        lines.append('\n**' + cat + '**')
+        for r in items[:10]:
+            a, b = date.fromisoformat(r['start']), date.fromisoformat(r['end'])
+            lines.append(f'・{r["name"]}｜{a:%m/%d}〜{b:%m/%d}')
+            for ds, attr in r['days']:
+                d = date.fromisoformat(ds)
+                if d >= today:
+                    emoji = {'火':'🔥','水':'💧','木':'🌳','光':'✨','闇':'🌙'}[attr]
+                    lines.append(f'  {d:%m/%d} {emoji}{attr}属性')
+    if len(lines) == 1:
+        lines.append('確認できた開催中・開催予定の日程はありません。')
+    lines.append('\n※日程は取得時点の情報です。')
+    chunks, buf = [], ''
+    for line in lines:
+        if len(buf) + len(line) + 1 > 1800 and buf:
+            chunks.append(buf.rstrip()); buf = ''
+        buf += line + '\n'
+    if buf: chunks.append(buf.rstrip())
+    return chunks
 
 
 def send(webhook, content):
     r = requests.post(webhook, json={'content': content, 'allowed_mentions': {'parse': []}}, timeout=25)
-    if r.status_code == 429:
-        time.sleep(min(float(r.json().get('retry_after', 2)) + 1, 30))
-        r = requests.post(webhook, json={'content': content, 'allowed_mentions': {'parse': []}}, timeout=25)
     r.raise_for_status()
 
 
-def render(records, now):
-    parts = [f'**🎁 {now:%Y/%m/%d} モンスト キャンペーン一覧**',
-             '公式・攻略サイトの記事から期間表記を検出した候補です。\n※開催中かどうか、期間と対象の対応は未検証です。必ずリンク先をご確認ください。']
-    for group, _ in GROUPS:
-        items = [x for x in records if x['group'] == group]
-        if not items:
-            continue
-        parts.append(f'\n**{group}**')
-        for x in items[:8]:
-            parts.append(f"・{x['name']}\n  📅 {x['period']}" +
-                         (f" / 対象記載: {x['attributes']}" if x['attributes'] else '') +
-                         f"\n  出典: {x.get('source', '不明')} / {x['url']}")
-    if not records:
-        parts.append('日程を読み取れる候補は見つかりませんでした。開催がないという意味ではありません。')
-    parts.append('\n情報源: モンスト公式 / GameWith / Game8 / AppBank（取得できたサイトのみ）')
-    # Discord 2000文字制限を考慮して行単位で分割
-    chunks, chunk = [], ''
-    for block in parts:
-        if len(chunk) + len(block) + 2 > 1850 and chunk:
-            chunks.append(chunk)
-            chunk = ''
-        chunk += block + '\n\n'
-    if chunk:
-        chunks.append(chunk)
-    return chunks
-
-
 def main():
-    webhook = os.environ.get('DISCORD_WEBHOOK_URL', '').strip()
-    if not webhook:
-        raise RuntimeError('DISCORD_WEBHOOK_URL が未設定です')
-    mode = os.environ.get('MODE', 'check')
+    mode = os.environ.get('MODE', 'morning')
+    if mode not in ('morning', 'campaigns', 'check'): raise ValueError('不明なMODE')
     now = datetime.now(JST)
     state = json.loads(STATE.read_text(encoding='utf-8')) if STATE.exists() else {}
-    if mode not in ('morning', 'check', 'campaigns'):
-        raise ValueError('MODE は morning / check / campaigns')
-    if mode == 'morning' and state.get('last_campaign_morning') == now.strftime('%Y-%m-%d'):
-        print('本日のキャンペーン一覧は送信済み')
-        return
-    records = gather()
-    fingerprint = hashlib.sha256(json.dumps(records, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-    state['campaign_hash'] = fingerprint
+    if mode == 'morning' and state.get('last_campaign_morning') == now.date().isoformat():
+        print('本日の投稿済み'); return
+    records = gather(now.date())
+    if mode != 'check':
+        webhook = os.environ.get('DISCORD_WEBHOOK_URL', '').strip()
+        if not webhook: raise RuntimeError('DISCORD_WEBHOOK_URL が未設定です')
+        for content in render(records, now.date()):
+            send(webhook, content); time.sleep(1)
+        if mode == 'morning': state['last_campaign_morning'] = now.date().isoformat()
     state['campaign_count'] = len(records)
     state['last_campaign_check'] = now.isoformat()
-    if mode != 'check':
-        for chunk in render(records, now):
-            send(webhook, chunk)
-            time.sleep(1)
-        if mode == 'morning':
-            state['last_campaign_morning'] = now.strftime('%Y-%m-%d')
-    else:
-        print(f'確認のみ: {len(records)}件。Discordへの速報投稿はしません。')
     STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    print(f'処理完了: {len(records)}件')
+    print('処理完了:', len(records), '件')
 
 
 if __name__ == '__main__':
-    try:
-        main()
+    try: main()
     except Exception as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         sys.exit(1)
