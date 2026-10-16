@@ -1,12 +1,11 @@
-name: モンストDiscord自動投稿
+name: モンストキャンペーン一覧
 on:
   schedule:
-    - cron: '0,30 * * * *' # 30分ごとに情報確認のみ（UTC）
-    - cron: '0 21 * * *'   # 日本時間6:00（UTC前日21:00）
+    - cron: '0 21 * * *' # UTC 21:00 = JST 翌朝06:00
   workflow_dispatch:
     inputs:
       mode:
-        description: 'morning / check / campaigns'
+        description: 'campaigns / morning / check'
         required: true
         default: 'campaigns'
 permissions:
@@ -27,16 +26,8 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           INPUT_MODE: ${{ github.event.inputs.mode }}
-          EVENT_SCHEDULE: ${{ github.event.schedule }}
         run: |
-          if [ -n "$INPUT_MODE" ]; then
-            MODE="$INPUT_MODE"
-          elif [ "$EVENT_SCHEDULE" = '0 21 * * *' ]; then
-            MODE=morning
-          else
-            MODE=check
-          fi
-          MODE="$MODE" python bot.py
+          MODE="${INPUT_MODE:-morning}" python bot.py
       - name: 投稿履歴を保存
         run: |
           if [ -f seen.json ]; then
