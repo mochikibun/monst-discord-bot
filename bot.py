@@ -23,6 +23,7 @@ def category(title):
 def fetch_articles():
     r = requests.get(BASE, headers=HEADERS, timeout=25)
     r.raise_for_status()
+    r.encoding = 'utf-8'
     soup = BeautifulSoup(r.text, 'html.parser')
     items = []
     for a in soup.select('a[href]'):
