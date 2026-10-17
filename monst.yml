@@ -1,0 +1,55 @@
+name: モンストキャンペーン一覧
+on:
+  schedule:
+    - cron: '0 21 * * *' # UTC 日曜21時はJST月曜6時。月曜は日次＋週間。
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 投稿モード（checkは投稿・履歴更新なし）
+        type: choice
+        options: [morning, campaigns, weekly, check]
+        default: check
+permissions:
+  contents: write
+concurrency:
+  group: monst-discord-bot
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: テスト
+        run: python -m unittest discover -s tests -v
+      - name: キャンペーン投稿
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          INPUT_MODE: ${{ inputs.mode }}
+        run: MODE="${INPUT_MODE:-morning}" python bot.py
+      - name: 投稿履歴を保存（途中失敗時も保存）
+        if: always()
+        run: |
+          if [ -f seen.json ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add seen.json
+            if ! git diff --cached --quiet; then
+              git commit -m 'Update campaign state'
+              git push
+            fi
+          fi
+      - name: 履歴の復旧用バックアップ
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: campaign-state-${{ github.run_id }}
+          path: seen.json
+          if-no-files-found: ignore
+          retention-days: 14
