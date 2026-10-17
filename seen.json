@@ -22,6 +22,11 @@
   "last_morning": "",
   "campaign_hash": "c3570e2739b738acb41b94df5d8e500e6fdea53288707c31de97d2b967ca5e4e",
   "campaign_count": 7,
-  "last_campaign_check": "2026-10-17T06:17:14.911624+09:00",
-  "last_campaign_morning": "2026-10-17"
+  "last_campaign_check": "2026-10-17T12:10:17.587280+09:00",
+  "last_campaign_morning": "2026-10-17",
+  "last_issues": [
+    "未確認：公式のキャンペーン内容を安全に分類できません",
+    "未確認：絶級・降臨の開催期間が一意に確定できません",
+    "未確認：開催期間を確定できません（公式）"
+  ]
 }
