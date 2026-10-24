@@ -22,8 +22,8 @@
   "last_morning": "",
   "campaign_hash": "c3570e2739b738acb41b94df5d8e500e6fdea53288707c31de97d2b967ca5e4e",
   "campaign_count": 5,
-  "last_campaign_check": "2026-10-24T06:24:34.668729+09:00",
-  "last_campaign_morning": "2026-10-24",
+  "last_campaign_check": "2026-10-25T06:20:31.895369+09:00",
+  "last_campaign_morning": "2026-10-25",
   "last_issues": [
     "未確認：開催期間を確定できません（公式）",
     "未確認：公式のキャンペーン内容を安全に分類できません",
@@ -89,6 +89,13 @@
     "daily:2026-10-24": {
       "chunks": [
         "🎁 **2026/10/24 モンスト キャンペーン一覧**\n\n**📚 追憶の書庫**\n・金卵排出率アップ｜10/21〜10/25\n  10/24 ✨光属性\n  出典：<https://www.monster-strike.com/news/20261015_3.html>\n\n**✨ ノーマルクエスト**\n・獲得経験値2倍｜10/17〜10/25\n  出典：<https://www.monster-strike.com/news/20261015_3.html>\n\n**🎁 その他**\n・学びのパワー出現率アップ｜10/17〜10/26\n  出典：<https://www.monster-strike.com/news/20261015_3.html>\n⚠ 未確認：取得失敗または日程を確定できない情報があります。公式情報をご確認ください。\n\n※日程は取得時点の情報です。日付単位の掲載のため開始・終了時刻は出典をご確認ください。"
+      ],
+      "sent": 1,
+      "complete": true
+    },
+    "daily:2026-10-25": {
+      "chunks": [
+        "🎁 **2026/10/25 モンスト キャンペーン一覧**\n\n**📚 追憶の書庫**\n・金卵排出率アップ｜10/21〜10/25\n  10/25 💧水属性\n  出典：<https://www.monster-strike.com/news/20261015_3.html>\n\n**✨ ノーマルクエスト**\n・獲得経験値2倍｜10/17〜10/25\n  出典：<https://www.monster-strike.com/news/20261015_3.html>\n\n**🎁 その他**\n・学びのパワー出現率アップ｜10/17〜10/26\n  出典：<https://www.monster-strike.com/news/20261015_3.html>\n⚠ 未確認：取得失敗または日程を確定できない情報があります。公式情報をご確認ください。\n\n※日程は取得時点の情報です。日付単位の掲載のため開始・終了時刻は出典をご確認ください。"
       ],
       "sent": 1,
       "complete": true
